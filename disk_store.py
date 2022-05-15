@@ -19,6 +19,7 @@ Typical usage example:
     # it also supports dictionary style API too:
     disk["hamlet"] = "shakespeare"
 """
+import datetime
 import os.path
 import time
 import typing
@@ -53,6 +54,14 @@ from format import encode_kv, decode_kv, decode_header
 # Read the paper for more details: https://riak.com/assets/bitcask-intro.pdf
 
 
+def read_serialised_header(a_file):
+    header_buf = a_file.read(12)
+    if len(header_buf) < 12:
+        return None
+    timestamp, key_size, value_size = decode_header(header_buf)
+    return header_buf, timestamp, key_size, value_size
+
+
 class DiskStorage:
     """
     Implements the KV store on the disk
@@ -64,16 +73,49 @@ class DiskStorage:
     """
 
     def __init__(self, file_name: str = "data.db"):
-        raise NotImplementedError
+        self.file_name = file_name
+        self.mapping = dict()
+        self.header_buf = None
+        if os.path.exists(file_name):
+            self._load_existing()
+        self.writer = open(file_name, "ab")
+        self.writer.seek(0, 2)  # SEEK_END = 2
+
+    def _load_existing(self):
+        with open(self.file_name, "rb") as a_file:
+            while True:
+                offset = a_file.tell()
+                header = read_serialised_header(a_file)
+                if header is None:
+                    break
+                header_buf, timestamp, key_size, value_size = header
+                tail_buf = a_file.read(key_size + value_size)
+                timestamp, key, value = decode_kv(header_buf + tail_buf)
+                self.mapping[key] = offset
 
     def set(self, key: str, value: str) -> None:
-        raise NotImplementedError
+        timestamp = int(datetime.datetime.now().timestamp())
+        buf_size, buf = encode_kv(timestamp, key, value)
+        offset = self.writer.tell()
+        self.writer.write(buf)
+        self.writer.flush()
+        self.mapping[key] = offset
 
     def get(self, key: str) -> str:
-        raise NotImplementedError
+        if key not in self.mapping:
+            return ""
+        offset = self.mapping[key]
+        with open(self.file_name, "rb") as a_file:
+            a_file.seek(offset)
+            header = read_serialised_header(a_file)
+            assert header is not None
+            header_buf, timestamp, key_size, value_size = header
+            tail_buf = a_file.read(key_size + value_size)
+            timestamp, key, value = decode_kv(header_buf + tail_buf)
+            return value
 
     def close(self) -> None:
-        raise NotImplementedError
+        self.writer.close()
 
     def __setitem__(self, key: str, value: str) -> None:
         return self.set(key, value)
